@@ -1,1 +1,131 @@
+name: Build Lulu Android Pet APK
 
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-lulu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Get open-source application and Lulu assets
+        run: |
+          git clone --depth 1 https://github.com/faysal-X-N/deskpet.git app-src
+          git clone --depth 1 https://github.com/czy666chen/lulu.git lulu-src
+
+      - name: Install art processing tools
+        run: python3 -m pip install 'Pillow>=10,<13'
+
+      - name: Embed Lulu as the only built-in pet
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import shutil
+          from pathlib import Path
+          from PIL import Image
+
+          root = Path('app-src')
+          assets = root / 'app/src/main/assets/pets'
+          source = Path('lulu-src')
+          assert source.joinpath('LICENSE').is_file(), 'Missing Lulu license'
+          assert source.joinpath('spritesheet.webp').is_file(), 'Missing Lulu sprite atlas'
+
+          # DeskPet's existing renderer expects a static 8x9 Codex Pet sheet.
+          # Lulu v2 is 8x11: nine animation rows + two directional-look rows.
+          # Preserve the nine native action rows with their full eight columns;
+          # exclude look-direction rows until renderer support is added.
+          with Image.open(source / 'spritesheet.webp') as picture:
+              picture.seek(0)
+              assert picture.size == (1536, 2288), f'Unexpected Lulu atlas size: {picture.size}'
+              sheet = picture.convert('RGBA').crop((0, 0, 1536, 208 * 9))
+
+          if assets.exists():
+              shutil.rmtree(assets)
+          target = assets / '000-lulu'
+          target.mkdir(parents=True)
+          sheet.save(target / 'spritesheet.png', format='PNG', optimize=True)
+
+          orig = json.loads((source / 'pet.json').read_text(encoding='utf-8'))
+          states = [
+              'idle', 'running-right', 'running-left', 'waving',
+              'jumping', 'failed', 'waiting', 'running', 'review'
+          ]
+          pet = {
+              'id': 'lulu-android',
+              'displayName': '水豚噜噜',
+              'description': orig.get('description', '安卓互动悬浮桌宠'),
+              'spritesheetPath': 'spritesheet.png',
+              'schema_version': '1',
+              'states': [
+                  {'name': name, 'row': index, 'frames': 8}
+                  for index, name in enumerate(states)
+              ]
+          }
+          (target / 'pet.json').write_text(
+              json.dumps(pet, ensure_ascii=False, indent=2) + '\n',
+              encoding='utf-8'
+          )
+          shutil.copyfile(source / 'LICENSE', target / 'LULU-LICENSE')
+          shutil.copyfile(root / 'LICENSE', root / 'DESKPET-LICENSE')
+          strings = root / 'app/src/main/res/values/strings.xml'
+          content = strings.read_text(encoding='utf-8')
+          assert '<string name="app_name">桌面宠物</string>' in content
+          strings.write_text(content.replace(
+              '<string name="app_name">桌面宠物</string>',
+              '<string name="app_name">水豚噜噜</string>'
+          ), encoding='utf-8')
+          assert Image.open(target / 'spritesheet.png').size == (1536, 1872)
+          print('Lulu assets embedded:', list(p.name for p in target.iterdir()))
+          PY
+
+      - name: Use official Gradle distribution
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('app-src/gradle/wrapper/gradle-wrapper.properties')
+          s = p.read_text()
+          replacement = 'https\\://services.gradle.org/distributions/gradle-8.13-bin.zip'
+          s = '\n'.join(
+              f'distributionUrl={replacement}' if line.startswith('distributionUrl=') else line
+              for line in s.splitlines()
+          ) + '\n'
+          p.write_text(s)
+          PY
+
+      - name: Run unit tests and assemble APK
+        working-directory: app-src
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Name APK
+        run: |
+          mkdir -p apk-output
+          cp app-src/app/build/outputs/apk/debug/app-debug.apk apk-output/Lulu-DeskPet-Android.apk
+          sha256sum apk-output/Lulu-DeskPet-Android.apk > apk-output/SHA256SUMS.txt
+
+      - name: Upload downloadable Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lulu-DeskPet-Android-APK
+          path: apk-output/
+          if-no-files-found: error
+          retention-days: 30
