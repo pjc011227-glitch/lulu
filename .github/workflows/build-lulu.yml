@@ -2,6 +2,8 @@ name: Build Lulu Android Pet APK
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
 
 permissions:
   contents: read
@@ -24,6 +26,8 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
 
       - name: Get open-source application and Lulu assets
         run: |
@@ -68,6 +72,12 @@ jobs:
               'idle', 'running-right', 'running-left', 'waving',
               'jumping', 'failed', 'waiting', 'running', 'review'
           ]
+          validation = json.loads((source / 'validation.json').read_text(encoding='utf-8'))
+          frame_counts = {
+              name: max((int(cell['column']) + 1 for cell in validation['cells']
+                         if cell['state'] == name and cell['used']), default=1)
+              for name in states
+          }
           pet = {
               'id': 'lulu-android',
               'displayName': '水豚噜噜',
@@ -75,7 +85,7 @@ jobs:
               'spritesheetPath': 'spritesheet.png',
               'schema_version': '1',
               'states': [
-                  {'name': name, 'row': index, 'frames': 8}
+                  {'name': name, 'row': index, 'frames': frame_counts[name]}
                   for index, name in enumerate(states)
               ]
           }
